@@ -1,0 +1,14 @@
+{
+  "name": "screenlink",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Consent-based peer-to-peer screen sharing website",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
