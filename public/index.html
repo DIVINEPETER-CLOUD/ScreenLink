@@ -59,6 +59,8 @@ video{width:100%;max-height:65vh;background:#05070b;border-radius:12px;margin-to
 <p class="muted">ScreenLink is an early demo. Use HTTPS when deployed. Some networks may need a TURN relay server for WebRTC to connect reliably.</p>
 </main>
 <script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="/supabase-config.js"></script>
 <script>
 const socket = io();
 const $ = id => document.getElementById(id);
