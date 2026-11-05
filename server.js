@@ -3,31 +3,13 @@ const http = require("http");
 const { Server } = require("socket.io");
 const crypto = require("crypto");
 const path = require("path");
-const fs = require("fs");
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 1e6 });
 
 app.use(express.static(path.join(__dirname, "public")));
 
-// TEMPORARY diagnostic route - we will delete this later
-app.get("/debug-files", (_req, res) => {
-  const publicPath = path.join(__dirname, "public");
-  let publicFiles;
-  try {
-    publicFiles = fs.readdirSync(publicPath);
-  } catch (err) {
-    publicFiles = "Error: " + err.message;
-  }
-  res.json({
-    dirname: __dirname,
-    cwd: process.cwd(),
-    publicPath,
-    publicExists: fs.existsSync(publicPath),
-    publicFiles,
-    rootFiles: fs.readdirSync(__dirname)
-  });
-});
+
 
 const rooms = new Map();
 
