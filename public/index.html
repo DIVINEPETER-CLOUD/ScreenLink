@@ -1,203 +1,202 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ScreenLink — Share your screen with permission</title>
-<style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#202b55,#090d18 58%);color:#f4f6ff;display:flex;justify-content:center;padding:28px}
-main{width:min(900px,100%)}
-header{margin:12px 0 24px}
-h1{font-size:clamp(2rem,6vw,3.4rem);margin:0;letter-spacing:-.05em}
-h1 span{color:#8eabff}
-p{color:#c2c9df;line-height:1.55}
-.card{background:#11182a;border:1px solid #2b3653;border-radius:18px;padding:22px;margin:14px 0;box-shadow:0 14px 35px #0003}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-button{border:0;border-radius:10px;padding:12px 16px;background:#8eabff;color:#091020;font-weight:750;cursor:pointer}
-button.secondary{background:#26334f;color:#f4f6ff}
-button.danger{background:#ff7d91;color:#23050a}
-input{width:min(100%,500px);background:#080d18;color:#fff;border:1px solid #394766;border-radius:10px;padding:12px;font:inherit}
-small,.muted{color:#9ca9c8}
-.status{padding:10px 12px;border-radius:10px;background:#080d18;color:#c5d0eb;margin-top:12px}
-video{width:100%;max-height:65vh;background:#05070b;border-radius:12px;margin-top:14px}
-.hidden{display:none}
-.notice{border-left:3px solid #8eabff;padding-left:12px}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScreenLink 2.0</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0;
+           margin: 0; padding: 20px; }
+    .box { max-width: 800px; margin: 0 auto; }
+    h1 { margin-top: 0; }
+    button { background: #3b82f6; color: white; border: 0; padding: 10px 16px;
+             border-radius: 6px; font-size: 15px; cursor: pointer; margin: 4px 4px 4px 0; }
+    button:disabled { background: #475569; cursor: not-allowed; }
+    input { padding: 10px; border-radius: 6px; border: 1px solid #475569;
+            background: #1e293b; color: white; width: 70%; }
+    video { width: 100%; background: black; border-radius: 8px; margin-top: 12px; }
+    .card { background: #1e293b; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    #status { color: #fbbf24; }
+    .hidden { display: none; }
+  </style>
 </head>
 <body>
-<main>
-<header>
-  <h1>Screen<span>Link</span></h1>
-  <p>Share your screen with a friend in real time. The person sharing always chooses what to share.</p>
-</header>
+<div class="box">
+  <h1>ScreenLink 2.0</h1>
+  <p>Status: <span id="status">Starting...</span></p>
 
-<section class="card">
-  <h2>1. Create a private room</h2>
-  <p>Create a room link and send it only to the person you want to connect with.</p>
-  <div class="row">
-    <button id="newRoom">Create room link</button>
-    <input id="roomLink" readonly placeholder="Your room link appears here">
-    <button class="secondary" id="copyLink">Copy link</button>
+  <!-- HOME: shown when there is no room in the address -->
+  <div id="home" class="card">
+    <h3>Share your screen</h3>
+    <button id="createBtn">Create room</button>
+    <h3>Join a room</h3>
+    <input id="joinInput" placeholder="Paste a room link or room ID">
+    <button id="joinBtn">Join</button>
   </div>
-  <p class="muted">Anyone who gets the room link may try to join. Keep it private.</p>
-</section>
 
-<section class="card">
-  <h2>2. Join the room</h2>
-  <p>The person sharing clicks “Share my screen” and approves the browser prompt. The other person clicks “View friend's screen”.</p>
-  <div class="row">
-    <button id="shareBtn">Share my screen</button>
-    <button class="secondary" id="viewBtn">View friend's screen</button>
-    <button class="danger hidden" id="stopBtn">Stop sharing</button>
+  <!-- HOST: the person sharing -->
+  <div id="hostPanel" class="card hidden">
+    <h3>You are the host</h3>
+    <p>Send this link to the viewer:</p>
+    <input id="roomLink" readonly>
+    <button id="copyBtn">Copy</button>
+    <div>
+      <button id="startBtn">Start sharing</button>
+      <button id="stopBtn" disabled>Stop sharing</button>
+    </div>
+    <p id="viewerInfo">Waiting for a viewer...</p>
   </div>
-  <div class="status" id="status" role="status">Not connected.</div>
-  <p class="notice"><strong>Privacy:</strong> Screen sharing requires the sharer's explicit browser permission. This app cannot secretly turn on screen sharing. Stop at any time using the button here or the browser's sharing controls.</p>
+
+  <!-- VIEWER: the person watching -->
+  <div id="viewerPanel" class="card hidden">
+    <h3>You are the viewer</h3>
+    <p>When the host says they are sharing, click the button.</p>
+    <button id="watchBtn">Watch screen</button>
+  </div>
+
   <video id="video" autoplay playsinline controls class="hidden"></video>
-</section>
-<p class="muted">ScreenLink is an early demo. Use HTTPS when deployed. Some networks may need a TURN relay server for WebRTC to connect reliably.</p>
-</main>
-<script src="/socket.io/socket.io.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="/supabase-config.js"></script>
-<script>
-const socket = io();
-const $ = id => document.getElementById(id);
-let room = new URLSearchParams(location.search).get("room") || "";
-let role = null;
-let stream = null;
-let peer = null;
-let pendingIce = [];
-const video = $("video");
-const statusBox = $("status");
+</div>
 
-function status(message){ statusBox.textContent = message; }
-function setRoom(value){
-  room = value;
-  const url = new URL(location.href);
-  url.searchParams.set("room", room);
-  history.replaceState({}, "", url);
-  $("roomLink").value = url.toString();
-}
-function newPeer(){
-  peer = new RTCPeerConnection({iceServers:[{urls:"stun:stun.l.google.com:19302"}]});
-  peer.onicecandidate = event => {
-    if(event.candidate) socket.emit("webrtc-ice", event.candidate);
-  };
-  peer.onconnectionstatechange = () => {
-    if(!peer) return;
-    if(peer.connectionState === "connected") status("Connected — screen sharing is live.");
-    if(["failed","disconnected"].includes(peer.connectionState)) status("Connection interrupted. Try reconnecting.");
-  };
-  peer.ontrack = event => {
-    video.srcObject = event.streams[0];
-    video.classList.remove("hidden");
-    status("Viewing the shared screen live.");
-  };
-  return peer;
-}
-async function join(asRole){
-  if(!room){
-    status("Create a room first, or open the room link your friend sent you.");
-    return false;
-  }
-  if(role) return role === asRole;
-  role = asRole;
-  socket.emit("join-room", {room, role});
-  return true;
-}
-$("newRoom").onclick = async () => {
-  try{
-    const response = await fetch("/new-room", {cache:"no-store"});
-    if(!response.ok) throw new Error("Request failed");
-    const data = await response.json();
-    setRoom(data.room);
-    status("Room created. Send the link to your friend.");
-  }catch(error){ status("Could not create a room. The website server may be unavailable."); }
-};
-$("copyLink").onclick = async () => {
-  if(!$("roomLink").value) return status("Create a room link first.");
-  try{ await navigator.clipboard.writeText($("roomLink").value); status("Room link copied."); }
-  catch(error){ $("roomLink").select(); status("Select and copy the room link."); }
-};
-$("shareBtn").onclick = async () => {
-  if(!room) return status("Create a room link first, then share it with your friend.");
-  try{
-    stream = await navigator.mediaDevices.getDisplayMedia({video:true,audio:false});
-    video.srcObject = stream;
-    video.classList.remove("hidden");
-    $("stopBtn").classList.remove("hidden");
-    stream.getVideoTracks()[0].addEventListener("ended", stopSharing);
-    if(await join("host")){
-      if(!peer) newPeer();
-      stream.getTracks().forEach(track => peer.addTrack(track, stream));
-      status("Your screen is selected. Waiting for your viewer…");
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+  const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+  let role = null;
+  let roomId = null;
+  let pc = null;
+  let localStream = null;
+
+  const $ = id => document.getElementById(id);
+  const setStatus = text => { $("status").textContent = text; };
+
+  // ---------- Connection status ----------
+  socket.on("connect", () => setStatus("Connected to server"));
+  socket.on("disconnect", () => setStatus("Disconnected from server"));
+  socket.on("room-error", msg => setStatus(msg));
+
+  // ---------- Joining a room ----------
+  function joinRoom(id, myRole) {
+    roomId = id;
+    role = myRole;
+    socket.emit("join-room", { room: id, role: myRole });
+    $("home").classList.add("hidden");
+    if (myRole === "host") {
+      $("hostPanel").classList.remove("hidden");
+      $("roomLink").value = location.origin + "/?room=" + id;
+    } else {
+      $("viewerPanel").classList.remove("hidden");
     }
-  }catch(error){ status("Screen sharing was cancelled or unavailable. Try a supported browser over HTTPS."); }
-};
-$("viewBtn").onclick = async () => {
-  if(await join("viewer")) status("Joined. Waiting for the person sharing…");
-};
-$("stopBtn").onclick = stopSharing;
-function stopSharing(){
-  if(stream) stream.getTracks().forEach(track => track.stop());
-  stream = null;
-  if(peer){ peer.close(); peer = null; }
-  socket.emit("stop-sharing");
-  $("stopBtn").classList.add("hidden");
-  status("Screen sharing stopped.");
-}
-socket.on("room-ready", ({role:readyRole}) => {
-  if(readyRole === "host") status("Room ready. Waiting for a viewer…");
-  if(readyRole === "viewer") status("Connected to room. Waiting for the sharer…");
-});
-socket.on("viewer-available", async () => {
-  if(role !== "host" || !stream || !peer) return;
-  status("Viewer joined. Setting up the connection…");
-});
-socket.on("webrtc-offer", async offer => {
-  if(role !== "host" || !peer) return;
-  try{
+  }
+
+  socket.on("room-ready", () => setStatus("In room as " + role));
+
+  // If the address contains ?room=..., join as viewer automatically
+  const roomFromUrl = new URLSearchParams(location.search).get("room");
+  if (roomFromUrl && /^[a-f0-9]{32}$/.test(roomFromUrl)) {
+    joinRoom(roomFromUrl, "viewer");
+  }
+
+  $("createBtn").onclick = async () => {
+    const res = await fetch("/new-room");
+    const data = await res.json();
+    joinRoom(data.room, "host");
+  };
+
+  $("joinBtn").onclick = () => {
+    const match = $("joinInput").value.match(/[a-f0-9]{32}/);
+    if (!match) { setStatus("That does not look like a room link or ID."); return; }
+    joinRoom(match[0], "viewer");
+  };
+
+  $("copyBtn").onclick = () => {
+    navigator.clipboard.writeText($("roomLink").value);
+    setStatus("Link copied!");
+  };
+
+  // ---------- Peer connection (shared by host and viewer) ----------
+  function makePeer() {
+    if (pc) pc.close();
+    pc = new RTCPeerConnection(rtcConfig);
+    pc.onicecandidate = e => {
+      if (e.candidate) socket.emit("webrtc-ice", e.candidate);
+    };
+    return pc;
+  }
+
+  socket.on("webrtc-ice", async candidate => {
+    try { if (pc) await pc.addIceCandidate(candidate); }
+    catch (err) { console.warn("ICE problem:", err); }
+  });
+
+  // ---------- HOST side ----------
+  socket.on("viewer-available", () => {
+    $("viewerInfo").textContent = "A viewer has joined!";
+  });
+
+  $("startBtn").onclick = async () => {
+    try {
+      localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    } catch (err) {
+      setStatus("Screen sharing was cancelled.");
+      return;
+    }
+    $("startBtn").disabled = true;
+    $("stopBtn").disabled = false;
+    setStatus("Sharing your screen");
+    // Runs if you press the browser's own "Stop sharing" bar
+    localStream.getVideoTracks()[0].onended = stopSharing;
+  };
+
+  function stopSharing() {
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+    if (pc) { pc.close(); pc = null; }
+    socket.emit("stop-sharing");
+    $("startBtn").disabled = false;
+    $("stopBtn").disabled = true;
+    setStatus("Sharing stopped");
+  }
+  $("stopBtn").onclick = stopSharing;
+
+  // The viewer sends an offer; the host answers it
+  socket.on("webrtc-offer", async offer => {
+    if (!localStream) { setStatus("A viewer asked to watch, but you are not sharing yet."); return; }
+    const peer = makePeer();
+    localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
     await peer.setRemoteDescription(offer);
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     socket.emit("webrtc-answer", peer.localDescription);
-    for(const candidate of pendingIce) await peer.addIceCandidate(candidate);
-    pendingIce = [];
-  }catch(error){ status("Could not establish the connection. Please rejoin the room."); }
-});
-socket.on("webrtc-answer", async answer => {
-  if(role !== "viewer" || !peer) return;
-  try{
-    await peer.setRemoteDescription(answer);
-    for(const candidate of pendingIce) await peer.addIceCandidate(candidate);
-    pendingIce = [];
-  }catch(error){ status("Could not establish the connection."); }
-});
-socket.on("webrtc-ice", async candidate => {
-  if(!peer || !peer.remoteDescription){ pendingIce.push(candidate); return; }
-  try{ await peer.addIceCandidate(candidate); }catch(error){}
-});
-socket.on("sharing-stopped", () => {
-  if(peer){ peer.close(); peer = null; }
-  video.srcObject = null;
-  video.classList.add("hidden");
-  status("The sharer stopped sharing or disconnected.");
-});
-socket.on("room-error", message => { status(message); role = null; });
-if(room) $("roomLink").value = new URL(location.href).toString();
+  });
 
-// The viewer starts the WebRTC offer after both people have joined.
-socket.on("room-ready", async ({role:readyRole}) => {
-  if(readyRole !== "viewer") return;
-  try{
-    if(!peer) newPeer();
+  // ---------- VIEWER side ----------
+  $("watchBtn").onclick = async () => {
+    const peer = makePeer();
+    peer.addTransceiver("video", { direction: "recvonly" });
+    peer.ontrack = e => {
+      $("video").srcObject = e.streams[0];
+      $("video").classList.remove("hidden");
+      setStatus("Watching the host's screen");
+    };
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
     socket.emit("webrtc-offer", peer.localDescription);
-  }catch(error){ status("Could not start the connection. Try rejoining."); }
-});
+    setStatus("Asking the host for the screen...");
+  };
+
+  socket.on("webrtc-answer", async answer => {
+    if (pc) await pc.setRemoteDescription(answer);
+  });
+
+  socket.on("sharing-stopped", () => {
+    if (role === "viewer") {
+      $("video").srcObject = null;
+      $("video").classList.add("hidden");
+      if (pc) { pc.close(); pc = null; }
+      setStatus("The host stopped sharing");
+    }
+  });
 </script>
 </body>
 </html>
