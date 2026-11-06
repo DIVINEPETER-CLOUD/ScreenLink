@@ -1,85 +1,247 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const crypto = require("crypto");
-const path = require("path");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScreenLink 2.0</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0;
+           margin: 0; padding: 20px; }
+    .box { max-width: 800px; margin: 0 auto; }
+    h1 { margin-top: 0; }
+    button { background: #3b82f6; color: white; border: 0; padding: 10px 16px;
+             border-radius: 6px; font-size: 15px; cursor: pointer; margin: 4px 4px 4px 0; }
+    button:disabled { background: #475569; cursor: not-allowed; }
+    input { padding: 10px; border-radius: 6px; border: 1px solid #475569;
+            background: #1e293b; color: white; width: 70%; }
+    video { width: 100%; background: black; border-radius: 8px; margin-top: 12px; }
+    .card { background: #1e293b; padding: 16px; border-radius: 8px; margin-bottom: 16px; }
+    #status { color: #fbbf24; }
+    .hidden { display: none; }
+  </style>
+  <!-- Error catcher: shows crashes in the Status line -->
+  <script>
+    window.addEventListener("error", function (e) {
+      var s = document.getElementById("status");
+      if (s) s.textContent = "ERROR: " + e.message;
+    });
+  </script>
+</head>
+<body>
+<div class="box">
+  <h1>ScreenLink 2.0</h1>
+  <p>Status: <span id="status">Starting...</span></p>
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { maxHttpBufferSize: 1e6 });
+  <!-- HOME -->
+  <div id="home" class="card">
+    <h3>Share your screen</h3>
+    <button id="createBtn">Create room</button>
+    <h3>Join a room</h3>
+    <input id="joinInput" placeholder="Paste a room link or room ID">
+    <button id="joinBtn">Join</button>
+  </div>
 
-app.use(express.static(path.join(__dirname, "public")));
+  <!-- HOST -->
+  <div id="hostPanel" class="card hidden">
+    <h3>You are the host</h3>
+    <p>Send this link to the viewer:</p>
+    <input id="roomLink" readonly>
+    <div>
+      <button id="copyBtn">Copy</button>
+      <button id="shareBtn">Share</button>
+      <button id="waBtn">WhatsApp</button>
+      <button id="tgBtn">Telegram</button>
+      <button id="snapBtn">Snapchat</button>
+    </div>
+    <div>
+      <button id="startBtn">Start sharing</button>
+      <button id="stopBtn" disabled>Stop sharing</button>
+    </div>
+    <p id="viewerInfo">Waiting for a viewer...</p>
+  </div>
 
-const rooms = new Map();
+  <!-- VIEWER -->
+  <div id="viewerPanel" class="card hidden">
+    <h3>You are the viewer</h3>
+    <p>When the host says they are sharing, click the button.</p>
+    <button id="watchBtn">Watch screen</button>
+  </div>
 
-app.get("/new-room", (_req, res) => {
-  const room = crypto.randomBytes(16).toString("hex");
-  res.set("Cache-Control", "no-store");
-  res.json({ room });
-});
+  <video id="video" autoplay playsinline controls class="hidden"></video>
+</div>
 
-io.on("connection", socket => {
-  socket.on("join-room", ({ room, role } = {}) => {
-    if (typeof room !== "string" || !/^[a-f0-9]{32}$/.test(room)) return;
-    if (!["host", "viewer"].includes(role)) return;
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+  const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-    const members = rooms.get(room) || { host: null, viewer: null };
+  let role = null;
+  let roomId = null;
+  let pc = null;
+  let localStream = null;
 
-    if (role === "host" && members.host && members.host !== socket.id) {
-      socket.emit("room-error", "A screen sharer is already connected to this room.");
+  const $ = id => document.getElementById(id);
+  const setStatus = text => { $("status").textContent = text; };
+
+  // ---------- Connection status ----------
+  socket.on("connect", () => setStatus("Connected to server"));
+  socket.on("disconnect", () => setStatus("Disconnected from server"));
+  socket.on("room-error", msg => setStatus(msg));
+
+  // ---------- Joining a room ----------
+  function joinRoom(id, myRole) {
+    roomId = id;
+    role = myRole;
+    socket.emit("join-room", { room: id, role: myRole });
+    $("home").classList.add("hidden");
+    if (myRole === "host") {
+      $("hostPanel").classList.remove("hidden");
+      $("roomLink").value = location.origin + "/?room=" + id;
+    } else {
+      $("viewerPanel").classList.remove("hidden");
+    }
+  }
+
+  socket.on("room-ready", () => setStatus("In room as " + role));
+
+  // If the address contains ?room=..., join as viewer automatically
+  const roomFromUrl = new URLSearchParams(location.search).get("room");
+  if (roomFromUrl && /^[a-f0-9]{32}$/.test(roomFromUrl)) {
+    joinRoom(roomFromUrl, "viewer");
+  }
+
+  $("createBtn").onclick = async () => {
+    try {
+      const res = await fetch("/new-room");
+      const data = await res.json();
+      joinRoom(data.room, "host");
+    } catch (err) {
+      setStatus("Could not create a room: " + err.message);
+    }
+  };
+
+  $("joinBtn").onclick = () => {
+    const match = $("joinInput").value.match(/[a-f0-9]{32}/);
+    if (!match) { setStatus("That does not look like a room link or ID."); return; }
+    joinRoom(match[0], "viewer");
+  };
+
+  // ---------- Sharing the room link ----------
+  $("copyBtn").onclick = () => {
+    navigator.clipboard.writeText($("roomLink").value);
+    setStatus("Link copied!");
+  };
+
+  $("shareBtn").onclick = async () => {
+    const link = $("roomLink").value;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: "ScreenLink", text: "Join my ScreenLink room:", url: link });
+      } catch (err) { /* you closed the share menu, nothing to do */ }
+    } else {
+      navigator.clipboard.writeText(link);
+      setStatus("Sharing menu not available here, so the link was copied instead.");
+    }
+  };
+
+  $("waBtn").onclick = () => {
+    const text = encodeURIComponent("Join my ScreenLink room: " + $("roomLink").value);
+    window.open("https://wa.me/?text=" + text, "_blank");
+  };
+
+  $("tgBtn").onclick = () => {
+    const link = encodeURIComponent($("roomLink").value);
+    const text = encodeURIComponent("Join my ScreenLink room");
+    window.open("https://t.me/share/url?url=" + link + "&text=" + text, "_blank");
+  };
+
+  $("snapBtn").onclick = () => {
+    const link = encodeURIComponent($("roomLink").value);
+    window.open("https://www.snapchat.com/scan?attachmentUrl=" + link, "_blank");
+  };
+
+  // ---------- Peer connection (shared by host and viewer) ----------
+  function makePeer() {
+    if (pc) pc.close();
+    pc = new RTCPeerConnection(rtcConfig);
+    pc.onicecandidate = e => {
+      if (e.candidate) socket.emit("webrtc-ice", e.candidate);
+    };
+    return pc;
+  }
+
+  socket.on("webrtc-ice", async candidate => {
+    try { if (pc) await pc.addIceCandidate(candidate); }
+    catch (err) { console.warn("ICE problem:", err); }
+  });
+
+  // ---------- HOST side ----------
+  socket.on("viewer-available", () => {
+    $("viewerInfo").textContent = "A viewer has joined!";
+  });
+
+  $("startBtn").onclick = async () => {
+    try {
+      localStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    } catch (err) {
+      setStatus("Screen sharing was cancelled.");
       return;
     }
-    if (role === "viewer" && members.viewer && members.viewer !== socket.id) {
-      socket.emit("room-error", "This demo room already has a viewer.");
-      return;
+    $("startBtn").disabled = true;
+    $("stopBtn").disabled = false;
+    setStatus("Sharing your screen");
+    localStream.getVideoTracks()[0].onended = stopSharing;
+  };
+
+  function stopSharing() {
+    if (localStream) localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+    if (pc) { pc.close(); pc = null; }
+    socket.emit("stop-sharing");
+    $("startBtn").disabled = false;
+    $("stopBtn").disabled = true;
+    setStatus("Sharing stopped");
+  }
+  $("stopBtn").onclick = stopSharing;
+
+  // The viewer sends an offer; the host answers it
+  socket.on("webrtc-offer", async offer => {
+    if (!localStream) { setStatus("A viewer asked to watch, but you are not sharing yet."); return; }
+    const peer = makePeer();
+    localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
+    await peer.setRemoteDescription(offer);
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    socket.emit("webrtc-answer", peer.localDescription);
+  });
+
+  // ---------- VIEWER side ----------
+  $("watchBtn").onclick = async () => {
+    const peer = makePeer();
+    peer.addTransceiver("video", { direction: "recvonly" });
+    peer.ontrack = e => {
+      $("video").srcObject = e.streams[0];
+      $("video").classList.remove("hidden");
+      setStatus("Watching the host's screen");
+    };
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    socket.emit("webrtc-offer", peer.localDescription);
+    setStatus("Asking the host for the screen...");
+  };
+
+  socket.on("webrtc-answer", async answer => {
+    if (pc) await pc.setRemoteDescription(answer);
+  });
+
+  socket.on("sharing-stopped", () => {
+    if (role === "viewer") {
+      $("video").srcObject = null;
+      $("video").classList.add("hidden");
+      if (pc) { pc.close(); pc = null; }
+      setStatus("The host stopped sharing");
     }
-
-    members[role] = socket.id;
-    rooms.set(room, members);
-    socket.data.room = room;
-    socket.data.role = role;
-    socket.join(room);
-    socket.emit("room-ready", { role });
-
-    if (members.host && members.viewer) {
-      io.to(members.host).emit("viewer-available");
-    }
   });
-
-  // The viewer creates the offer; the host answers it.
-  socket.on("webrtc-offer", offer => {
-    if (socket.data.role !== "viewer" || !socket.data.room) return;
-    const members = rooms.get(socket.data.room);
-    if (members?.host) io.to(members.host).emit("webrtc-offer", offer);
-  });
-
-  socket.on("webrtc-answer", answer => {
-    if (socket.data.role !== "host" || !socket.data.room) return;
-    const members = rooms.get(socket.data.room);
-    if (members?.viewer) io.to(members.viewer).emit("webrtc-answer", answer);
-  });
-
-  socket.on("webrtc-ice", candidate => {
-    if (!socket.data.room || !["host", "viewer"].includes(socket.data.role)) return;
-    socket.to(socket.data.room).emit("webrtc-ice", candidate);
-  });
-
-  socket.on("stop-sharing", () => {
-    if (socket.data.room) socket.to(socket.data.room).emit("sharing-stopped");
-  });
-
-  socket.on("disconnect", () => {
-    const roomId = socket.data.room;
-    const members = rooms.get(roomId);
-    if (!members) return;
-    if (members.host === socket.id) {
-      members.host = null;
-      socket.to(roomId).emit("sharing-stopped");
-    }
-    if (members.viewer === socket.id) members.viewer = null;
-    if (!members.host && !members.viewer) rooms.delete(roomId);
-  });
-});
-
-const port = process.env.PORT || 3000;
-server.listen(port, () => console.log(`ScreenLink running on port ${port}`));
+</script>
+</body>
+</html>
