@@ -69,7 +69,20 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+const pc = new RTCPeerConnection({
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    {
+      urls: [
+        "turn:YOUR_TURN_HOST:80",
+        "turn:YOUR_TURN_HOST:443?transport=tcp",
+        "turns:YOUR_TURN_HOST:443?transport=tcp"
+      ],
+      username: "YOUR_USERNAME",
+      credential: "YOUR_CREDENTIAL"
+    }
+  ]
+});
 
   let role = null;
   let roomId = null;
