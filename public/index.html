@@ -63,31 +63,46 @@
     <button id="watchBtn">Watch screen</button>
   </div>
 
-  <video id="video" autoplay playsinline controls class="hidden"></video>
+  <video id="video" autoplay playsinline muted controls class="hidden"></video>
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-const pc = new RTCPeerConnection({
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    {
+
+  // ---------------------------------------------------------------
+  // TURN SERVER SETTINGS: replace these three values with the ones
+  // from your TURN provider (for example Metered.ca Open Relay).
+  // While they are still the placeholders, the TURN entry is skipped.
+  // ---------------------------------------------------------------
+  const TURN = {
+    host: "YOUR_TURN_HOST",
+    username: "YOUR_USERNAME",
+    credential: "YOUR_CREDENTIAL"
+  };
+
+  const iceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+  if (TURN.host && TURN.host !== "YOUR_TURN_HOST") {
+    iceServers.push({
       urls: [
-        "turn:YOUR_TURN_HOST:80",
-        "turn:YOUR_TURN_HOST:443?transport=tcp",
-        "turns:YOUR_TURN_HOST:443?transport=tcp"
+        "turn:" + TURN.host + ":80",
+        "turn:" + TURN.host + ":443?transport=tcp",
+        "turns:" + TURN.host + ":443?transport=tcp"
       ],
-      username: "YOUR_USERNAME",
-      credential: "YOUR_CREDENTIAL"
-    }
-  ]
-});
+      username: TURN.username,
+      credential: TURN.credential
+    });
+  } else {
+    console.warn("No TURN server configured. Connections across different networks may fail.");
+  }
+  const rtcConfig = { iceServers: iceServers };
 
   let role = null;
   let roomId = null;
   let pc = null;
   let localStream = null;
+  let pendingCandidates = [];   // ICE candidates that arrived before the remote description
+  let pendingOffer = null;      // offer received before the host started sharing
 
   const $ = id => document.getElementById(id);
   const setStatus = text => { $("status").textContent = text; };
@@ -165,23 +180,90 @@ const pc = new RTCPeerConnection({
     window.open("https://www.snapchat.com/scan?attachmentUrl=" + link, "_blank");
   };
 
+  // ---------------------------------------------------------------
+  // WebRTC
+  // ---------------------------------------------------------------
+
+  // Creates a fresh peer connection (closing any old one).
   function makePeer() {
-    if (pc) pc.close();
-    pc = new RTCPeerConnection(rtcConfig);
-    pc.onicecandidate = e => {
-      if (e.candidate) socket.emit("webrtc-ice", e.candidate);
+    if (pc) { pc.onicecandidate = null; pc.close(); }
+    pendingCandidates = [];
+    const peer = new RTCPeerConnection(rtcConfig);
+    pc = peer;
+
+    // Also send candidates one by one (trickle ICE) as a backup.
+    // The main path is waitForIce(), which puts them inside the offer/answer.
+    peer.onicecandidate = event => {
+      if (event.candidate) socket.emit("webrtc-ice", event.candidate);
     };
-    return pc;
+
+    peer.oniceconnectionstatechange = () => {
+      if (pc !== peer) return;
+      const s = peer.iceConnectionState;
+      if (s === "checking") setStatus("Connecting...");
+      if (s === "connected" || s === "completed") {
+        setStatus(role === "host" ? "Sharing your screen" : "Watching the host's screen");
+      }
+      if (s === "failed") {
+        setStatus("Connection failed. The networks may need a TURN server.");
+      }
+    };
+
+    return peer;
   }
 
+  // Waits until the browser has gathered all its network candidates
+  // (or 5 seconds have passed), so the offer/answer we send is complete.
+  function waitForIce(peer, timeoutMs) {
+    return new Promise(resolve => {
+      if (peer.iceGatheringState === "complete") { resolve(); return; }
+      const finish = () => {
+        clearTimeout(timer);
+        peer.removeEventListener("icegatheringstatechange", check);
+        resolve();
+      };
+      const check = () => { if (peer.iceGatheringState === "complete") finish(); };
+      const timer = setTimeout(finish, timeoutMs || 5000);
+      peer.addEventListener("icegatheringstatechange", check);
+    });
+  }
+
+  async function flushCandidates(peer) {
+    const list = pendingCandidates;
+    pendingCandidates = [];
+    for (const c of list) {
+      try { await peer.addIceCandidate(c); }
+      catch (err) { console.warn("ICE problem:", err); }
+    }
+  }
+
+  // Candidate sent by the other side
   socket.on("webrtc-ice", async candidate => {
-    try { if (pc) await pc.addIceCandidate(candidate); }
-    catch (err) { console.warn("ICE problem:", err); }
+    if (!pc) return;
+    if (pc.remoteDescription) {
+      try { await pc.addIceCandidate(candidate); }
+      catch (err) { console.warn("ICE problem:", err); }
+    } else {
+      pendingCandidates.push(candidate);   // wait until the remote description is set
+    }
   });
 
   socket.on("viewer-available", () => {
     $("viewerInfo").textContent = "A viewer has joined!";
   });
+
+  // ----- Host side -----
+
+  async function answerViewer(offer) {
+    const peer = makePeer();
+    localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
+    await peer.setRemoteDescription(offer);
+    await flushCandidates(peer);
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    await waitForIce(peer);
+    socket.emit("webrtc-answer", peer.localDescription);
+  }
 
   $("startBtn").onclick = async () => {
     try {
@@ -194,11 +276,20 @@ const pc = new RTCPeerConnection({
     $("stopBtn").disabled = false;
     setStatus("Sharing your screen");
     localStream.getVideoTracks()[0].onended = stopSharing;
+
+    // If a viewer already asked to watch, answer them now.
+    if (pendingOffer) {
+      const offer = pendingOffer;
+      pendingOffer = null;
+      try { await answerViewer(offer); }
+      catch (err) { setStatus("Could not start the connection: " + err.message); }
+    }
   };
 
   function stopSharing() {
     if (localStream) localStream.getTracks().forEach(t => t.stop());
     localStream = null;
+    pendingOffer = null;
     if (pc) { pc.close(); pc = null; }
     socket.emit("stop-sharing");
     $("startBtn").disabled = false;
@@ -208,31 +299,46 @@ const pc = new RTCPeerConnection({
   $("stopBtn").onclick = stopSharing;
 
   socket.on("webrtc-offer", async offer => {
-    if (!localStream) { setStatus("A viewer asked to watch, but you are not sharing yet."); return; }
-    const peer = makePeer();
-    localStream.getTracks().forEach(t => peer.addTrack(t, localStream));
-    await peer.setRemoteDescription(offer);
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    socket.emit("webrtc-answer", peer.localDescription);
+    if (!localStream) {
+      pendingOffer = offer;   // remember it, and answer when sharing starts
+      setStatus("A viewer wants to watch. Click Start sharing.");
+      return;
+    }
+    try { await answerViewer(offer); }
+    catch (err) { setStatus("Could not start the connection: " + err.message); }
   });
 
+  // ----- Viewer side -----
+
   $("watchBtn").onclick = async () => {
-    const peer = makePeer();
-    peer.addTransceiver("video", { direction: "recvonly" });
-    peer.ontrack = e => {
-      $("video").srcObject = e.streams[0];
-      $("video").classList.remove("hidden");
-      setStatus("Watching the host's screen");
-    };
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    socket.emit("webrtc-offer", peer.localDescription);
-    setStatus("Asking the host for the screen...");
+    try {
+      const peer = makePeer();
+      peer.addTransceiver("video", { direction: "recvonly" });
+      peer.ontrack = e => {
+        const video = $("video");
+        video.srcObject = e.streams[0];
+        video.classList.remove("hidden");
+        video.play().catch(() => { /* user can press play on the controls */ });
+        setStatus("Watching the host's screen");
+      };
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await waitForIce(peer);
+      socket.emit("webrtc-offer", peer.localDescription);
+      setStatus("Asking the host for the screen...");
+    } catch (err) {
+      setStatus("Could not start watching: " + err.message);
+    }
   };
 
   socket.on("webrtc-answer", async answer => {
-    if (pc) await pc.setRemoteDescription(answer);
+    if (!pc) return;
+    try {
+      await pc.setRemoteDescription(answer);
+      await flushCandidates(pc);
+    } catch (err) {
+      setStatus("Could not connect: " + err.message);
+    }
   });
 
   socket.on("sharing-stopped", () => {
